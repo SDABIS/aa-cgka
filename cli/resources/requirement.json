@@ -1,0 +1,9 @@
+{
+  "issuer": "did:web:localhost%3A9000:dids:issuer",
+  "credentialSubject": {
+    "degree": {
+      "university": "Example University",
+      "name": "Degree in Computer Science"
+    }
+  }
+}

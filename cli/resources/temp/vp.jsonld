@@ -1,0 +1,36 @@
+{
+  "@context": [
+    "https://www.w3.org/2018/credentials/v1"
+  ],
+  "type": "VerifiablePresentation",
+  "verifiableCredential": {
+    "@context": [
+      "https://www.w3.org/2018/credentials/v1"
+    ],
+    "type": "VerifiableCredential",
+    "credentialSubject": {
+      "id": "urn:uuid:04dd096f-18cc-4c12-ae97-4f954cce4f0c"
+    },
+    "issuer": "did:web:localhost%3A9000:dids",
+    "issuanceDate": "2021-08-04T20:11:12.806Z",
+    "proof": {
+      "@context": [
+        "https://w3c-ccg.github.io/lds-jws2020/contexts/lds-jws2020-v1.json"
+      ],
+      "type": "JsonWebSignature2020",
+      "proofPurpose": "assertionMethod",
+      "verificationMethod": "did:web:localhost%3A9000:dids#key1",
+      "created": "2021-08-04T20:11:12.807Z",
+      "jws": "eyJhbGciOiJQUzI1NiIsImNyaXQiOlsiYjY0Il0sImI2NCI6ZmFsc2V9..Whwod7RkvFll1Uw8xvEIwgmzkRhtX0bUBow6BMDeiofl76mEA3rrc88tzhk2DEGpZ1TiPA9tqK5MunY8fgV4gq4rMtQTP8mMTMZ5hye0_aaY33f6J-WuPnlHFQ-fdWMxBIUpLPv97n6StNYAvQRA5TYxAAHTJKPNTFX8ywqtCNcr7eWbA5hYo6I01JzX3iAYSUu-BXIAWhJ2xpUr9o9XO9v4kLYCyLhIwIb0O8f9ZUqBwiPOBZAo8Ni5j51bHvx2OH7dtQc_9iA8Lg_94ZmBxk7CK6KCUbV-buXm634t9c64IKOPA1wKj_JQG_g58gA1F2DAqT5WK25OTRFzsmdltg"
+    }
+  },
+  "proof": {
+    "type": "Ed25519Signature2018",
+    "proofPurpose": "authentication",
+    "challenge": "example",
+    "verificationMethod": "did:web:localhost%3A9000:dids#key2",
+    "created": "2023-11-24T12:15:55.535921700Z",
+    "jws": "eyJhbGciOiJFZERTQSIsImNyaXQiOlsiYjY0Il0sImI2NCI6ZmFsc2V9..jvRvKS0ZpOEN35D6nLNnJ9LzvaHwDZo3V17XY65xuLp3DHTKA3iLIKrXto82oQADkBvYw03_T5SmWrpqqB7pBw"
+  },
+  "holder": "did:web:localhost%3A9000:dids"
+}
