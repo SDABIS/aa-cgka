@@ -1,6 +1,6 @@
 # Attribute-Authenticated Continuous Group Key Agreement
 
-This is a Rust implementation of the Attribute-Authenticated Continuous Group Key Agreement (AA-CGKA) protocol, as specified in [our paper](https://arxiv.org/abs/2405.12042) 
+This is a Rust implementation of the Attribute-Authenticated Continuous Group Key Agreement (AA-CGKA) protocol, as specified in [this paper](https://arxiv.org/abs/2405.12042) 
 
 Our implementation builds upon the following libraries:
 
