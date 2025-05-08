@@ -1,9 +1,0 @@
-{
-  "issuer": "did:web:localhost%3A9000:dids:issuer",
-  "credentialSubject": {
-    "degree": {
-      "university": "Different University",
-      "name": "Degree in Physics"
-    }
-  }
-}

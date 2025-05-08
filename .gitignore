@@ -1,17 +1,11 @@
-**/target
-delivery-service/ds/target
-**/*.rs.bk
-.DS_Store
-.vscode
 **/Cargo.lock
-*.code-workspace
-/test_vectors/
-fuzz/corpus
-fuzz/artifacts
-.cargo/
+**/target
 
-# CLion IDE
-.idea
-*.iws
-*.iml
-*.ipr
+/environment/client/simulated_client
+/environment/client/logs
+
+/environment/server/mls-ds
+/environment/client/rendezvous/rendezvous
+
+**/*.png
+**/*.csv
