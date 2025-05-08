@@ -8,4 +8,5 @@
 /environment/client/rendezvous/rendezvous
 
 **/*.png
+**/*.pdf
 **/*.csv

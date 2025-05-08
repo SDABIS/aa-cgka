@@ -1,0 +1,64 @@
+[meta]
+# Number of clients to execute in paralel inside a single image
+replicas = 10
+
+[cgka]
+# Delivery Service. Options: ["request", "mqtt", "gossipsub"]
+ds = "mqtt"
+# Attribute-Based Credential scheme. Options: ["basic", "sdjwt", "bbsvc"]
+credential_type = "bbsvc"
+
+# Groups the user will try to create/join
+groups = ["group_AAA"]
+# Whether or not the client will atempt to perform "External Joins"
+external_join = false
+# Probability of creating the group (if it does not exist) and/or perform "External Join" 
+# In AA-CGKA, also determines chance of creating new KeyPackage for an specific group
+join_chance = 0.1
+# Probability of issuing an update (Commit or Proposal)
+issue_update_chance = 0.5
+# Probability of issuing a randomly generated application message 
+message_chance = 0
+# Reduce "issue_update_chance" and "message_chance" dinamically in function of current number of members
+scale = false
+# Who is able to issue updates. Options: ["random", "first", "last"]
+auth_policy = "random"
+
+# Size of application messages
+message_length_min = 1000
+message_length_max = 2000
+
+# Time between actions
+sleep_millis_min = 10000
+sleep_millis_max = 30000
+
+[paradigm]
+# Chance for each individual commit type. They should add to 1 and cannot go over it.
+invite_chance = 1
+remove_chance = 0
+update_chance = 0
+
+# Chosen paradigm. Options: ["commit", "propose"]
+paradigm = "commit"
+# If paradigm = "propose", number of proposals included in each commit
+proposals_per_commit = 2
+
+
+[http_server]
+# URL of the HTTP Server
+url = "http://10.68.96.217:8080"
+
+[mqtt]
+# URL of the MQTT broker (if cgka.ds = "mqtt")
+url = "tcp://10.68.96.217:1883"
+
+[gossipsub]
+# Address in which gossipsub will listen (if cgka.ds = "gossipsub")
+address = "0.0.0.0"
+# Chosen Directory (if cgka.ds = "gossipsub"). Options: ["server", "kademlia"]
+directory = "server"
+
+# Port of the Rendezvous server
+rendezvous_port = 62649
+# Peer ID of the Rendezvous server
+rendezvous_id = "12D3KooWDpJ7As7BWAwRMfu1VU2WCqNjvq387JEYKDBj4kx6nXTN"

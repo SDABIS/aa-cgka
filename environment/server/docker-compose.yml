@@ -1,0 +1,19 @@
+version: '3'
+
+services:
+  server:
+    build: ./
+    restart: always
+    image: mls_server
+    ports: 
+      - "8080:8080"
+  broker:
+    image: eclipse-mosquitto:latest
+    ports: 
+      - "1883:1883"
+      - "9001:9001"
+    volumes: 
+      - ./broker/config:/mosquitto/config
+      - ./broker/log:/mosquitto/log
+    depends_on:
+      - server

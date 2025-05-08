@@ -1,0 +1,9 @@
+{
+  "issuer": "did:example:issuer",
+  "credentialSubject": {
+    "degree": {
+      "university": "Different University",
+      "name": "Degree in Physics"
+    }
+  }
+}

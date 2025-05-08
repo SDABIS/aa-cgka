@@ -1,0 +1,24 @@
+[workspace]
+members = [
+    "openmls",
+    "traits",
+    "openmls_rust_crypto",
+    "libcrux_crypto",
+    "memory_storage",
+    "simulated_client",
+    "openmls_test",
+    "delivery-service/ds",
+    "delivery-service/ds-lib",
+    "basic_credential",
+    "vc_credential",
+]
+resolver = "2"
+
+# Central dependency management for some crates
+[workspace.dependencies]
+tls_codec = { version = "0.4.1", features = [
+    "derive",
+    "serde",
+    "mls",
+]}
+

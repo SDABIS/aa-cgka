@@ -1,0 +1,43 @@
+version: '3'
+networks:
+  mls_network:
+    external: true
+
+services:
+#  issuer:
+#    image: client-issuer
+#    build:
+#      context: ./issuer/
+#    ports:
+#      - 9000
+#    networks:
+#      mls_network:
+#        aliases: 
+#          - issuer
+      
+  rendezvous:
+    image: client-rendezvous
+    build:
+      context: ./rendezvous/
+    ports:
+      - 62649
+    networks:
+      mls_network:
+        aliases: 
+          - rendezvous
+  client:
+    build: 
+      context: .
+    image: mls_simulated_client
+    deploy:
+      mode: replicated
+      replicas: ${REPLICAS:-10}
+    restart: always
+    volumes:
+      - /etc/localtime:/etc/localtime:ro
+      - ./logs:/app/logs
+    networks: 
+      - mls_network
+    depends_on:
+      - rendezvous
+#      - issuer

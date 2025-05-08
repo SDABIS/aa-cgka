@@ -1,0 +1,711 @@
+//! # Credentials
+//!
+//! A [`Credential`] contains identifying information about the client that
+//! created it. [`Credential`]s represent clients in MLS groups and are
+//! used to authenticate their messages. Each
+//! [`KeyPackage`](crate::key_packages::KeyPackage) as well as each client (leaf node)
+//! in the group (tree) contains a [`Credential`] and is authenticated.
+//! The [`Credential`] must the be checked by an authentication server and the
+//! application, which is out of scope of MLS.
+//!
+//! Clients can create a [`Credential`].
+//!
+//! The MLS protocol spec allows the [`Credential`] that represents a client in a group to
+//! change over time. Concretely, members can issue an Update proposal or a Full
+//! Commit to update their [`LeafNode`](crate::treesync::LeafNode), as
+//! well as the [`Credential`] in it. The Update has to be authenticated by the
+//! signature public key corresponding to the old [`Credential`].
+//!
+//! When receiving a credential update from another member, applications must
+//! query the Authentication Service to ensure that the new credential is valid.
+//!
+//! There are multiple [`CredentialType`]s, although OpenMLS currently only
+//! supports the [`BasicCredential`].
+
+use std::io::{Read, Write};
+use std::thread;
+use base64::Engine;
+use base64::prelude::BASE64_STANDARD;
+use serde::{Deserialize, Serialize};
+use tls_codec::{
+    Deserialize as TlsDeserializeTrait, DeserializeBytes, Error, Serialize as TlsSerializeTrait,
+    Size, TlsDeserialize, TlsDeserializeBytes, TlsSerialize, TlsSize, VLBytes,
+};
+use openmls_vc_credential::{LinkedDataProofOptions, Presentation};
+use openmls_vc_credential::sdjwt::{SDJWTManager, SDJWTProofOptions};
+
+#[cfg(test)]
+mod tests;
+
+use crate::{ciphersuite::SignaturePublicKey, group::Member, treesync::LeafNode};
+use errors::*;
+use openmls_basic_credential::SignatureKeyPair;
+use openmls_vc_credential::vc::pk_to_nonce;
+use crate::prelude::SsiVcRequirementsExtension;
+
+// Public
+pub mod errors;
+
+/// CredentialType.
+///
+/// This enum contains variants for the different Credential Types.
+///
+/// ```c
+/// // See IANA registry for registered values
+/// uint16 CredentialType;
+/// ```
+///
+/// **IANA Considerations**
+///
+/// | Value            | Name                     | R | Ref      |
+/// |:-----------------|:-------------------------|:--|:---------|
+/// | 0x0000           | RESERVED                 | - | RFC XXXX |
+/// | 0x0001           | basic                    | Y | RFC XXXX |
+/// | 0x0002           | x509                     | Y | RFC XXXX |
+/// | 0x0A0A           | GREASE                   | Y | RFC XXXX |
+/// | 0x1A1A           | GREASE                   | Y | RFC XXXX |
+/// | 0x2A2A           | GREASE                   | Y | RFC XXXX |
+/// | 0x3A3A           | GREASE                   | Y | RFC XXXX |
+/// | 0x4A4A           | GREASE                   | Y | RFC XXXX |
+/// | 0x5A5A           | GREASE                   | Y | RFC XXXX |
+/// | 0x6A6A           | GREASE                   | Y | RFC XXXX |
+/// | 0x7A7A           | GREASE                   | Y | RFC XXXX |
+/// | 0x8A8A           | GREASE                   | Y | RFC XXXX |
+/// | 0x9A9A           | GREASE                   | Y | RFC XXXX |
+/// | 0xAAAA           | GREASE                   | Y | RFC XXXX |
+/// | 0xBABA           | GREASE                   | Y | RFC XXXX |
+/// | 0xCACA           | GREASE                   | Y | RFC XXXX |
+/// | 0xDADA           | GREASE                   | Y | RFC XXXX |
+/// | 0xEAEA           | GREASE                   | Y | RFC XXXX |
+/// | 0xF000  - 0xFFFF | Reserved for Private Use | - | RFC XXXX |
+#[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[repr(u16)]
+pub enum CredentialType {
+    /// A [`BasicCredential`]
+    Basic = 1,
+    /// W3C's [`Verifiable Credentials`]
+    VC = 3,
+    SDJWT = 4,
+    BBSVC = 5,
+    /// Another type of credential that is not in the MLS protocol spec.
+    Other(u16),
+}
+
+impl Size for CredentialType {
+    fn tls_serialized_len(&self) -> usize {
+        2
+    }
+}
+
+impl TlsDeserializeTrait for CredentialType {
+    fn tls_deserialize<R: Read>(bytes: &mut R) -> Result<Self, Error>
+    where
+        Self: Sized,
+    {
+        let mut extension_type = [0u8; 2];
+        bytes.read_exact(&mut extension_type)?;
+
+        Ok(CredentialType::from(u16::from_be_bytes(extension_type)))
+    }
+}
+
+impl TlsSerializeTrait for CredentialType {
+    fn tls_serialize<W: Write>(&self, writer: &mut W) -> Result<usize, Error> {
+        writer.write_all(&u16::from(*self).to_be_bytes())?;
+
+        Ok(2)
+    }
+}
+
+impl DeserializeBytes for CredentialType {
+    fn tls_deserialize_bytes(bytes: &[u8]) -> Result<(Self, &[u8]), Error>
+    where
+        Self: Sized,
+    {
+        let mut bytes_ref = bytes;
+        let credential_type = CredentialType::tls_deserialize(&mut bytes_ref)?;
+        let remainder = &bytes[credential_type.tls_serialized_len()..];
+        Ok((credential_type, remainder))
+    }
+}
+
+impl From<u16> for CredentialType {
+    fn from(value: u16) -> Self {
+        match value {
+            1 => CredentialType::Basic,
+            3 => CredentialType::VC,
+            4 => CredentialType::SDJWT,
+            5 => CredentialType::BBSVC,
+            unknown => CredentialType::Other(unknown),
+        }
+    }
+}
+
+impl From<String> for CredentialType {
+    fn from(dir: String) -> Self {
+        match dir.as_str() {
+            "vc" => CredentialType::VC,
+            "sdjwt" => CredentialType::SDJWT,
+            "bbsvc" => CredentialType::BBSVC,
+            _ => CredentialType::Basic,
+        }
+    }
+}
+
+impl From<CredentialType> for u16 {
+    fn from(value: CredentialType) -> Self {
+        match value {
+            CredentialType::Basic => 1,
+            CredentialType::VC => 3,
+            CredentialType::SDJWT => 4,
+            CredentialType::BBSVC => 5,
+            CredentialType::Other(unknown) => unknown,
+        }
+    }
+}
+
+/// X.509 Certificate.
+///
+/// This struct contains an X.509 certificate chain.  Note that X.509
+/// certificates are not yet supported by OpenMLS.
+///
+/// ```c
+/// struct {
+///     opaque cert_data<V>;
+/// } Certificate;
+/// ```
+#[derive(Debug, PartialEq, Eq, Clone, Serialize, Deserialize, TlsSerialize, TlsDeserialize, TlsSize)]
+pub struct Certificate {
+    cert_data: Vec<u8>,
+}
+
+#[derive(
+    Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TlsSerialize, TlsDeserialize, TlsSize,
+)]
+pub struct ProofOptions {
+    proof_options: VLBytes,
+}
+
+/// Credential.
+///
+/// OpenMLS does not look into credentials and only passes them along.
+/// As such they are opaque to the code in OpenMLS and only the basic necessary
+/// checks and operations are done.
+///
+/// OpenMLS provides an implementation of the [`BasicCredential`].
+///
+/// This struct contains MLS credential data, where the data depends on the
+/// type.
+///
+/// **Note:** While the credential is opaque to OpenMLS, the library must know how
+///           to deserialize it. The implementation only works with credentials
+///           that are encoded as variable-sized vectors.
+///           Other credentials will cause OpenMLS either to crash or exhibit
+///           unexpected behaviour.
+///
+/// ```c
+/// struct {
+///     CredentialType credential_type;
+///     select (Credential.credential_type) {
+///         case basic:
+///             opaque identity<V>;
+///
+///         case x509:
+///             Certificate chain<V>;
+///     };
+/// } Credential;
+/// ```
+#[derive(
+    Debug,
+    PartialEq,
+    Eq,
+    Clone,
+    Serialize,
+    Deserialize,
+    TlsSize,
+    TlsSerialize,
+    TlsDeserialize,
+    TlsDeserializeBytes,
+)]
+
+pub struct Credential {
+    credential_type: CredentialType,
+    identity: VLBytes,
+    serialized_credential_content: VLBytes,
+}
+
+impl Credential {
+    /// Returns the credential type.
+    pub fn credential_type(&self) -> CredentialType {
+        self.credential_type
+    }
+
+    /// Creates and returns a new [`Credential`] of the given
+    /// [`CredentialType`].
+    pub fn new(credential_type: CredentialType, serialized_credential: Vec<u8>) -> Self {
+        Self {
+            credential_type,
+            identity: serialized_credential.clone().into(),
+            serialized_credential_content: serialized_credential.into(),
+        }
+    }
+
+    pub fn new_from_vp(
+        name: String,
+        identity: &Presentation,
+        proof_options: &LinkedDataProofOptions,
+    ) -> Result<Self, CredentialError> {
+        let verifiable_credential = VerifiableCredential::new(
+            CredentialType::VC,
+            name.into_bytes().into(),
+            Certificate {
+                cert_data: serde_json::to_vec(&identity)
+                    .map_err(|_| CredentialError::InvalidCredential)?
+                    .into(),
+            },
+            ProofOptions {
+                proof_options: serde_json::to_vec(&proof_options)
+                    .map_err(|_| CredentialError::InvalidCredential)?
+                    .into(),
+            }
+        );
+        let credential = Credential::from(verifiable_credential);
+        Ok(credential)
+    }
+
+    pub fn new_from_bbs_vc(
+        name: String,
+        identity: &openmls_vc_credential::Credential,
+        proof_options: &LinkedDataProofOptions,
+    ) -> Result<Self, CredentialError> {
+        let verifiable_credential = VerifiableCredential::new(
+            CredentialType::BBSVC,
+           name.into_bytes().into(),
+            Certificate {
+                cert_data: serde_json::to_vec(&identity)
+                    .map_err(|_| CredentialError::InvalidCredential)?
+                    .into(),
+            },
+            ProofOptions {
+                proof_options: serde_json::to_vec(&proof_options)
+                    .map_err(|_| CredentialError::InvalidCredential)?
+                    .into(),
+            });
+        let credential = Credential::from(verifiable_credential);
+        Ok(credential)
+    }
+
+    pub fn new_from_sd_jwt(
+        name: String,
+        identity: String,
+        proof_options: &SDJWTProofOptions,
+    ) -> Result<Self, CredentialError> {
+        let verifiable_credential = VerifiableCredential::new(
+            CredentialType::SDJWT,
+            name.into_bytes().into(),
+            Certificate {
+                cert_data: serde_json::to_vec(&identity)
+                    .map_err(|_| CredentialError::InvalidCredential)?
+                    .into(),
+            },
+            ProofOptions {
+                proof_options: serde_json::to_vec(&proof_options)
+                    .map_err(|_| CredentialError::InvalidCredential)?
+                    .into(),
+        });
+    let credential = Credential::from(verifiable_credential);
+    Ok(credential)
+    }
+
+    /// Get this serialized credential content.
+    ///
+    /// This is the content of the `select` statement. It is a TLS serialized
+    /// vector.
+    pub fn serialized_content(&self) -> &[u8] {
+        self.serialized_credential_content.as_slice()
+    }
+
+    /// Get the credential, deserialized.
+    pub fn deserialized<T: tls_codec::Size + tls_codec::Deserialize>(
+        &self,
+    ) -> Result<T, tls_codec::Error> {
+        T::tls_deserialize_exact(&self.serialized_credential_content)
+    }
+
+    pub fn identity(&self) -> &[u8] {
+        self.identity.as_slice()
+    }
+}
+
+/// Basic Credential.
+///
+/// A `BasicCredential` as defined in the MLS protocol spec. It exposes only an
+/// `identity` to represent the client.
+///
+/// Note that this credential does not contain any key material or any other
+/// information.
+///
+/// OpenMLS provides an implementation of signature keys for convenience in the
+/// `openmls_basic_credential` crate.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BasicCredential {
+    identity: VLBytes,
+}
+
+impl BasicCredential {
+    /// Create a new basic credential.
+    ///
+    /// Errors
+    ///
+    /// Returns a [`BasicCredentialError`] if the length of the identity is too
+    /// large to be encoded as a variable-length vector.
+    pub fn new(identity: Vec<u8>) -> Self {
+        Self {
+            identity: identity.into(),
+        }
+    }
+
+    /// Get the identity of this basic credential as byte slice.
+    pub fn identity(&self) -> &[u8] {
+        self.identity.as_slice()
+    }
+}
+
+impl From<BasicCredential> for Credential {
+    fn from(credential: BasicCredential) -> Self {
+        Credential {
+            credential_type: CredentialType::Basic,
+            identity: credential.identity.clone(),
+            serialized_credential_content: credential.identity,
+        }
+    }
+}
+
+impl TryFrom<Credential> for BasicCredential {
+    type Error = BasicCredentialError;
+
+    fn try_from(credential: Credential) -> Result<Self, Self::Error> {
+        match credential.credential_type {
+            CredentialType::Basic => Ok(BasicCredential::new(
+                credential.serialized_credential_content.into(),
+            )),
+            _ => Err(errors::BasicCredentialError::WrongCredentialType),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TlsSerialize, TlsDeserialize, TlsSize)]
+pub struct VerifiableCredential {
+    credential_type: CredentialType,
+    identity: VLBytes,
+    cert: Certificate,
+    proof_options: ProofOptions,
+}
+
+impl VerifiableCredential {
+    /// Create a new basic credential.
+    ///
+    /// Errors
+    ///
+    /// Returns a [`BasicCredentialError`] if the length of the identity is too
+    /// large to be encoded as a variable-length vector.
+    pub fn new(credential_type: CredentialType, identity: Vec<u8>, cert: Certificate, proof_options: ProofOptions) -> Self {
+        Self {
+            credential_type,
+            identity: identity.into(),
+            cert,
+            proof_options,
+        }
+    }
+
+    /// Get the identity of this basic credential as byte slice.
+    pub fn identity(&self) -> &[u8] {
+        self.identity.as_slice()
+    }
+}
+
+impl From<VerifiableCredential> for Credential {
+    fn from(credential: VerifiableCredential) -> Self {
+        let serialized_credential = credential.tls_serialize_detached().unwrap();
+
+        Credential {
+            credential_type: credential.credential_type,
+            identity: credential.identity.clone(),
+            serialized_credential_content: serialized_credential.into(),
+        }
+    }
+}
+
+impl TryFrom<Credential> for VerifiableCredential {
+    type Error = BasicCredentialError;
+
+    fn try_from(credential: Credential) -> Result<Self, Self::Error> {
+        match credential.credential_type {
+            CredentialType::VC | CredentialType::SDJWT | CredentialType::BBSVC => {
+                VerifiableCredential::tls_deserialize(
+                    &mut credential.serialized_credential_content.as_slice()
+                ).map_err(|e| BasicCredentialError::TlsCodecError(e))
+
+            }
+            _ => Err(BasicCredentialError::WrongCredentialType),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+/// A wrapper around a credential with a corresponding public key.
+pub struct CredentialWithKey {
+    /// The [`Credential`].
+    pub credential: Credential,
+    /// The corresponding public key as [`SignaturePublicKey`].
+    pub signature_key: SignaturePublicKey,
+}
+
+impl From<&LeafNode> for CredentialWithKey {
+    fn from(leaf_node: &LeafNode) -> Self {
+        Self {
+            credential: leaf_node.credential().clone(),
+            signature_key: leaf_node.signature_key().clone(),
+        }
+    }
+}
+
+impl From<&Member> for CredentialWithKey {
+    fn from(member: &Member) -> Self {
+        Self {
+            credential: member.credential.clone(),
+            signature_key: member.signature_key.clone().into(),
+        }
+    }
+}
+
+impl CredentialWithKey {
+    pub fn from_parts(credential: Credential, key: &[u8]) -> Self {
+        Self {
+            credential,
+            signature_key: key.into(),
+        }
+    }
+
+    pub fn validate(&self, requirements: Option<SsiVcRequirementsExtension>) -> Result<(), CredentialError> {
+        //log::info!("VALIDATING CREDENTIAL");
+        match &self.credential.credential_type {
+            CredentialType::Basic => {
+                if let Some(requirements) = requirements {
+                    if requirements.is_empty() {
+                        Ok(())
+                    }
+                    else {
+                        Err(CredentialError::UnsupportedCredentialType)
+                    }
+                }
+                else {
+                    Ok(())
+                }
+            }
+            CredentialType::Other(_) => {
+                unimplemented!();
+            }
+            CredentialType::VC => {
+                let verifiable_credential = VerifiableCredential::try_from(self.credential.clone())
+                    .map_err(|_| CredentialError::InvalidCredential)?;
+                //log::info!("\t\tType: Verifiable Credential (VC)");
+                let vp: Presentation = serde_json::from_slice(verifiable_credential.cert.cert_data.as_slice())
+                    .map_err(|_| CredentialError::InvalidCredential)?;
+                let ldpo: LinkedDataProofOptions = serde_json::from_slice(verifiable_credential.proof_options.proof_options.as_slice())
+                    .map_err(|_| CredentialError::InvalidCredential)?;
+
+                let decoded_pk = ldpo.clone().nonce.unwrap_or("".to_string());
+
+                if decoded_pk != pk_to_nonce(self.signature_key.as_slice()) {
+                    return Err(CredentialError::InvalidCredential)
+                }
+
+                if let Some(requirements) = requirements {
+                    for requirement in requirements {
+                        requirement.match_requirement_vp(&vp)?;
+                    }
+                }
+
+                let vp = vp.clone();
+                let ldpo = ldpo.clone();
+
+                thread::spawn(move || {
+                    openmls_vc_credential::vc::validate_vp(
+                        vp.clone(),
+                        ldpo.clone(),
+                    ).map_err(|_| CredentialError::InvalidCredential)
+                }).join().expect("Thread panicked")
+
+                //Validate PK???
+            },
+            CredentialType::SDJWT => {
+                let verifiable_credential = VerifiableCredential::try_from(self.credential.clone())
+                    .map_err(|_| CredentialError::InvalidCredential)?;
+
+                //log::info!("\t\tType: JWT with Selective Disclosure (SD_JWT)");
+                let presentation: String = serde_json::from_slice(verifiable_credential.cert.cert_data.as_slice())
+                    .map_err(|_| CredentialError::InvalidCredential)?;
+                let sd_jwt_proof_options: SDJWTProofOptions = serde_json::from_slice(verifiable_credential.proof_options.proof_options.as_slice())
+                    .map_err(|_| CredentialError::InvalidCredential)?;
+                let manager = SDJWTManager::new(None, None);
+
+                let disclosed_claims = {
+                    let presentation = presentation.clone();
+                    let sd_jwt_proof_options = sd_jwt_proof_options.clone();
+                    thread::spawn(move || {
+                        manager.verify(presentation, sd_jwt_proof_options.clone()).map_err(|_| CredentialError::InvalidCredential)
+                    }).join().expect("Thread panicked")?
+                };
+
+                if let Some(requirements) = requirements {
+                    for requirement in requirements {
+                        requirement.match_requirement_sd_jwt(disclosed_claims.clone())?;
+                    }
+                }
+
+                let decoded_pk = BASE64_STANDARD.decode(sd_jwt_proof_options.nonce)
+                    .map_err(|_| CredentialError::InvalidCredential)?;
+
+                if decoded_pk != self.signature_key.as_slice() {
+                    return Err(CredentialError::InvalidCredential)
+                }
+                Ok(())
+            },
+            CredentialType::BBSVC => {
+                let verifiable_credential = VerifiableCredential::try_from(self.credential.clone())
+                    .map_err(|_| CredentialError::InvalidCredential)?;
+
+                //log::info!("\t\tType: VC with BBS+ signature (BBS_VC)");
+                let vc: openmls_vc_credential::Credential = serde_json::from_slice(verifiable_credential.cert.cert_data.as_slice())
+                    .map_err(|_| CredentialError::InvalidCredential)?;
+                let ldpo: LinkedDataProofOptions = serde_json::from_slice(verifiable_credential.proof_options.proof_options.as_slice())
+                    .map_err(|_| CredentialError::InvalidCredential)?;
+
+                let decoded_pk = ldpo.clone().nonce.unwrap_or("".to_string());
+
+                if decoded_pk != pk_to_nonce(self.signature_key.as_slice()) {
+                    return Err(CredentialError::InvalidCredential)
+                }
+
+                if let Some(requirements) = requirements {
+                    for requirement in requirements {
+                        requirement.match_requirement_bbs_vc(&vc)?;
+                    }
+                }
+
+                let vc = vc.clone();
+                let ldpo = ldpo.clone();
+                thread::spawn(move || {
+                    openmls_vc_credential::vc::validate_bbs_vc(
+                        vc.clone(),
+                        ldpo.clone())
+                        .map_err(|_| CredentialError::InvalidCredential)
+                }).join().expect("Thread panicked")
+
+            },
+        }
+    }
+}
+
+#[cfg(any(test, feature = "test-utils"))]
+pub mod test_utils {
+    use openmls_basic_credential::SignatureKeyPair;
+    use openmls_traits::{types::SignatureScheme, OpenMlsProvider};
+
+    use super::{BasicCredential, CredentialWithKey};
+
+    /// Convenience function that generates a new credential and a key pair for
+    /// it (using the basic credential crate).
+    /// The signature keys are stored in the key store.
+    ///
+    /// Returns the [`Credential`] and the [`SignatureKeyPair`].
+    ///
+    /// [`Credential`]: super::Credential
+    pub fn new_credential(
+        provider: &impl OpenMlsProvider,
+        identity: &[u8],
+        signature_scheme: SignatureScheme,
+    ) -> (CredentialWithKey, SignatureKeyPair) {
+        let credential = BasicCredential::new(identity.into());
+        let signature_keys = SignatureKeyPair::new(signature_scheme).unwrap();
+        signature_keys.store(provider.storage()).unwrap();
+
+        (
+            CredentialWithKey {
+                credential: credential.into(),
+                signature_key: signature_keys.public().into(),
+            },
+            signature_keys,
+        )
+    }
+}
+
+#[cfg(test)]
+mod unit_tests {
+    use tls_codec::{
+        DeserializeBytes, Serialize, TlsDeserialize, TlsDeserializeBytes, TlsSerialize, TlsSize,
+    };
+
+    use super::{BasicCredential, Credential, CredentialType};
+
+    #[test]
+    fn basic_credential_identity_and_codec() {
+        const IDENTITY: &str = "identity";
+        // Test the identity getter.
+        let basic_credential = BasicCredential::new(IDENTITY.into());
+        assert_eq!(basic_credential.identity(), IDENTITY.as_bytes());
+
+        // Test the encoding and decoding.
+        let credential = Credential::from(basic_credential.clone());
+        let serialized = credential.tls_serialize_detached().unwrap();
+
+        let deserialized = Credential::tls_deserialize_exact_bytes(&serialized).unwrap();
+        assert_eq!(credential.credential_type(), deserialized.credential_type());
+        assert_eq!(
+            credential.serialized_content(),
+            deserialized.serialized_content()
+        );
+
+        let deserialized_basic_credential = BasicCredential::try_from(deserialized).unwrap();
+        assert_eq!(
+            deserialized_basic_credential.identity(),
+            IDENTITY.as_bytes()
+        );
+        assert_eq!(basic_credential, deserialized_basic_credential);
+    }
+
+    /// Test the [`Credential`] with a custom credential.
+    #[test]
+    fn custom_credential() {
+        #[derive(
+            Debug, Clone, PartialEq, Eq, TlsSize, TlsSerialize, TlsDeserialize, TlsDeserializeBytes,
+        )]
+        struct CustomCredential {
+            custom_field1: u32,
+            custom_field2: Vec<u8>,
+            custom_field3: Option<u8>,
+        }
+
+        let custom_credential = CustomCredential {
+            custom_field1: 42,
+            custom_field2: vec![1, 2, 3],
+            custom_field3: Some(2),
+        };
+
+        let credential = Credential::new(
+            CredentialType::Other(1234),
+            custom_credential.tls_serialize_detached().unwrap(),
+        );
+
+        let serialized = credential.tls_serialize_detached().unwrap();
+        let deserialized = Credential::tls_deserialize_exact_bytes(&serialized).unwrap();
+        assert_eq!(credential, deserialized);
+
+        let deserialized_custom_credential =
+            CustomCredential::tls_deserialize_exact_bytes(deserialized.serialized_content())
+                .unwrap();
+
+        assert_eq!(custom_credential, deserialized_custom_credential);
+    }
+}

@@ -1,0 +1,15 @@
+[package]
+name = "rendezvous"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+futures = "0.3.30"
+libp2p = { version = "0.55.0", features = [ "tokio", "gossipsub", "identify", "quic", "dns", "rendezvous", "noise", "macros", "tcp", "yamux", "kad", "request-response"] }
+tokio = { version = "1.38", features = ["rt-multi-thread", "macros", "time"] }
+tracing = "0.1.41"
+tracing-subscriber = { version = "0.3.19", features = ["env-filter"]}
+
+[[bin]]
+name = "rendezvous"
+path = "main.rs"

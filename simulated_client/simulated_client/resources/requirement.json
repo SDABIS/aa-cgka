@@ -1,0 +1,9 @@
+{
+  "issuer": "did:example:issuer",
+  "credentialSubject": {
+    "degree": {
+      "university": "Example University",
+      "name": "Degree in Computer Science"
+    }
+  }
+}
